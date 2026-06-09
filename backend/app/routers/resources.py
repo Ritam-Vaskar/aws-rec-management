@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.services.auth import require_session
 from app.services.inventory import list_resources
 
 
@@ -8,6 +9,7 @@ router = APIRouter(prefix="/resources", tags=["resources"])
 
 @router.get("")
 def get_resources(
+    user: str = Depends(require_session),
     search: str | None = Query(default=None),
     resource_type: str | None = Query(default=None),
     region: str | None = Query(default=None),

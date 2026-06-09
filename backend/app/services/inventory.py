@@ -5,6 +5,8 @@ from copy import deepcopy
 import importlib
 import os
 
+from app.services.secure_store import load_aws_credentials
+
 
 def _boto3():
     return importlib.import_module("boto3")
@@ -17,12 +19,13 @@ def _botocore_exceptions():
 
 def _aws_session():
     boto3 = _boto3()
-    region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    session_token = os.getenv("AWS_SESSION_TOKEN")
-    role_arn = os.getenv("AWS_ASSUME_ROLE_ARN")
-    role_session_name = os.getenv("AWS_ASSUME_ROLE_SESSION_NAME", "aws-dash-dashboard")
+    settings = load_aws_credentials()
+    region = settings.get("AWS_DEFAULT_REGION", "us-east-1")
+    access_key = settings.get("AWS_ACCESS_KEY_ID", "")
+    secret_key = settings.get("AWS_SECRET_ACCESS_KEY", "")
+    session_token = settings.get("AWS_SESSION_TOKEN", "")
+    role_arn = settings.get("AWS_ASSUME_ROLE_ARN", "")
+    role_session_name = settings.get("AWS_ASSUME_ROLE_SESSION_NAME", "aws-dash-dashboard")
 
     if access_key and secret_key:
         session = boto3.Session(
@@ -372,6 +375,9 @@ def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
     except (ClientError, BotoCoreError) as exc:
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if error_code in {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation"}:
+            raise PermissionError(str(exc)) from exc
         error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
         if error_code in {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation"}:
             raise PermissionError(str(exc)) from exc

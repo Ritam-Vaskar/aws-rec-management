@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services.inventory import update_resource_tags
+from app.services.auth import require_session
 
 
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -14,7 +15,7 @@ class TagUpdateRequest(BaseModel):
 
 
 @router.post("/update")
-def update_tags(request: TagUpdateRequest) -> dict[str, object]:
+def update_tags(request: TagUpdateRequest, user: dict[str, object] = Depends(require_session)) -> dict[str, object]:
     try:
         resource = update_resource_tags(
             resource_id=request.resource_id,
