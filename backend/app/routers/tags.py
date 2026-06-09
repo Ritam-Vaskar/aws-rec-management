@@ -23,5 +23,7 @@ def update_tags(request: TagUpdateRequest) -> dict[str, object]:
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     return {"status": "ok", "resource": resource}

@@ -372,6 +372,9 @@ def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
     except (ClientError, BotoCoreError) as exc:
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if error_code in {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation"}:
+            raise PermissionError(str(exc)) from exc
         raise RuntimeError(str(exc)) from exc
 
     raise KeyError(f"Unsupported resource type: {resource_type}")
