@@ -226,16 +226,9 @@ def _list_tagged_resources(session, region: str) -> list[dict[str, object]]:
 
 
 def _iter_regions(session) -> list[str]:
-    _, ClientError = _botocore_exceptions()
-    BotoCoreError, _ = _botocore_exceptions()
+    """Get list of regions to query. For performance, only use the configured region."""
     region = session.region_name or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    ec2 = session.client("ec2", region_name=region)
-    try:
-        response = ec2.describe_regions(AllRegions=False)
-        regions = [item.get("RegionName", region) for item in response.get("Regions", [])]
-        return sorted(set(regions)) or [region]
-    except (ClientError, BotoCoreError):
-        return [region]
+    return [region]
 
 
 def _collect_live_resources() -> list[dict[str, object]]:
@@ -243,18 +236,34 @@ def _collect_live_resources() -> list[dict[str, object]]:
     session = _aws_session()
     resources: list[dict[str, object]] = []
 
+    # Collect S3 resources (global)
     try:
         resources.extend(_list_s3_resources(session))
-    except (ClientError, BotoCoreError):
-        pass
+    except (ClientError, BotoCoreError) as e:
+        print(f"Error collecting S3 resources: {e}")
 
+    # Collect regional resources
     for region in _iter_regions(session):
-        for collector in (_list_ec2_resources, _list_rds_resources, _list_elbv2_resources, _list_tagged_resources):
-            try:
-                resources.extend(collector(session, region))
-            except (ClientError, BotoCoreError):
-                continue
+        # EC2 Instances
+        try:
+            resources.extend(_list_ec2_resources(session, region))
+        except (ClientError, BotoCoreError) as e:
+            print(f"Error collecting EC2 resources in {region}: {e}")
+        
+        # RDS Instances
+        try:
+            resources.extend(_list_rds_resources(session, region))
+        except (ClientError, BotoCoreError) as e:
+            print(f"Error collecting RDS resources in {region}: {e}")
+        
+        # Skip ELBv2 and tagged resources for now to improve performance
+        # for collector in (_list_elbv2_resources, _list_tagged_resources):
+        #     try:
+        #         resources.extend(collector(session, region))
+        #     except (ClientError, BotoCoreError):
+        #         continue
 
+    # Deduplicate resources
     seen: set[tuple[str, str]] = set()
     deduped: list[dict[str, object]] = []
     for resource in resources:
