@@ -201,6 +201,20 @@ function SkeletonRows() {
 
 function ThemeToggle() {
   const { resolved, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    return (
+      <button className="theme-toggle" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" />
+      </button>
+    );
+  }
+
   const isDark = resolved === "dark";
   return (
     <button
