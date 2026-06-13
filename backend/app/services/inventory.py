@@ -5,6 +5,8 @@ from copy import deepcopy
 import importlib
 import os
 
+from app.services.cache import get_cached_resources, set_cached_resources, update_cached_resource_tags
+
 
 def _boto3():
     return importlib.import_module("boto3")
@@ -15,13 +17,13 @@ def _botocore_exceptions():
     return exceptions_module.BotoCoreError, exceptions_module.ClientError
 
 
-def _aws_session():
+def _aws_session(account_id: str | None = None):
     boto3 = _boto3()
     region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    access_key = os.getenv("AWS_ACCESS_KEY_ID")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    session_token = os.getenv("AWS_SESSION_TOKEN")
-    role_arn = os.getenv("AWS_ASSUME_ROLE_ARN")
+    access_key = os.getenv("AWS_ACCESS_KEY_ID") or None
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY") or None
+    session_token = os.getenv("AWS_SESSION_TOKEN") or None
+    role_arn = os.getenv("AWS_ASSUME_ROLE_ARN") or None
     role_session_name = os.getenv("AWS_ASSUME_ROLE_SESSION_NAME", "aws-dash-dashboard")
 
     if access_key and secret_key:
@@ -34,10 +36,26 @@ def _aws_session():
     else:
         session = boto3.Session(region_name=region)
 
+    sts = session.client("sts")
+
+    if account_id:
+        try:
+            target_role = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
+            assumed = sts.assume_role(RoleArn=target_role, RoleSessionName="DashboardOrgSession")
+            credentials = assumed["Credentials"]
+            return boto3.Session(
+                aws_access_key_id=credentials["AccessKeyId"],
+                aws_secret_access_key=credentials["SecretAccessKey"],
+                aws_session_token=credentials["SessionToken"],
+                region_name=region,
+            )
+        except Exception as e:
+            print(f"Failed to assume role for account {account_id}: {e}")
+            return None
+
     if not role_arn:
         return session
 
-    sts = session.client("sts")
     assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName=role_session_name)
     credentials = assumed["Credentials"]
     return boto3.Session(
@@ -46,6 +64,32 @@ def _aws_session():
         aws_session_token=credentials["SessionToken"],
         region_name=region,
     )
+
+def _get_org_accounts(session) -> list[dict[str, str]]:
+    _, ClientError = _botocore_exceptions()
+    accounts = []
+    try:
+        org_client = session.client("organizations")
+        paginator = org_client.get_paginator("list_accounts")
+        for page in paginator.paginate():
+            for acc in page.get("Accounts", []):
+                if acc.get("Status") == "ACTIVE":
+                    account_id = acc.get("Id")
+                    ou_name = ""
+                    try:
+                        parents = org_client.list_parents(ChildId=account_id).get("Parents", [])
+                        if parents and parents[0]["Type"] == "ORGANIZATIONAL_UNIT":
+                            ou_id = parents[0]["Id"]
+                            ou_info = org_client.describe_organizational_unit(OrganizationalUnitId=ou_id)
+                            ou_name = ou_info.get("OrganizationalUnit", {}).get("Name", "")
+                        elif parents and parents[0]["Type"] == "ROOT":
+                            ou_name = "Root"
+                    except ClientError:
+                        pass
+                    accounts.append({"account_id": account_id, "ou": ou_name})
+    except (ClientError, Exception) as e:
+        print(f"Error fetching org accounts: {e}")
+    return accounts
 
 
 def _clean_tags(raw_tags: Iterable[dict[str, str]] | None) -> dict[str, str]:
@@ -231,39 +275,78 @@ def _iter_regions(session) -> list[str]:
     return [region]
 
 
-def _collect_live_resources() -> list[dict[str, object]]:
+def _get_current_account_id(session) -> str:
+    """Get the account ID for the current session via STS."""
+    try:
+        sts = session.client("sts")
+        identity = sts.get_caller_identity()
+        return identity.get("Account", "")
+    except Exception as e:
+        print(f"[inventory] Could not determine current account ID: {e}")
+        return ""
+
+
+def collect_live_resources(tenant_id: str = "default") -> list[dict[str, object]]:
     BotoCoreError, ClientError = _botocore_exceptions()
-    session = _aws_session()
+    base_session = _aws_session()
+    if not base_session:
+        print("[inventory] ERROR: Could not create AWS session — check credentials")
+        return []
+
     resources: list[dict[str, object]] = []
 
-    # Collect S3 resources (global)
-    try:
-        resources.extend(_list_s3_resources(session))
-    except (ClientError, BotoCoreError) as e:
-        print(f"Error collecting S3 resources: {e}")
+    # Try org accounts first; fall back to single-account mode
+    accounts = _get_org_accounts(base_session)
+    if not accounts:
+        current_account_id = _get_current_account_id(base_session)
+        print(f"[inventory] No org accounts found — falling back to current account: {current_account_id or 'unknown'}")
+        accounts = [{"account_id": None, "ou": "Default"}]
 
-    # Collect regional resources
-    for region in _iter_regions(session):
-        # EC2 Instances
-        try:
-            resources.extend(_list_ec2_resources(session, region))
-        except (ClientError, BotoCoreError) as e:
-            print(f"Error collecting EC2 resources in {region}: {e}")
-        
-        # RDS Instances
-        try:
-            resources.extend(_list_rds_resources(session, region))
-        except (ClientError, BotoCoreError) as e:
-            print(f"Error collecting RDS resources in {region}: {e}")
-        
-        # Skip ELBv2 and tagged resources for now to improve performance
-        # for collector in (_list_elbv2_resources, _list_tagged_resources):
-        #     try:
-        #         resources.extend(collector(session, region))
-        #     except (ClientError, BotoCoreError):
-        #         continue
+    print(f"[inventory] Scanning {len(accounts)} account(s)")
 
-    # Deduplicate resources
+    for acc in accounts:
+        account_id = acc["account_id"]
+        ou = acc["ou"]
+
+        session = _aws_session(account_id=account_id) if account_id else base_session
+        if not session:
+            print(f"[inventory] Skipping account {account_id} — could not assume role")
+            continue
+
+        effective_account = account_id or _get_current_account_id(session)
+        print(f"[inventory] Scanning account={effective_account or 'unknown'} ou={ou}")
+
+        try:
+            s3_items = _list_s3_resources(session)
+            print(f"[inventory] S3: found {len(s3_items)} buckets")
+            for r in s3_items:
+                r["account_id"] = effective_account or r.get("account_id", "")
+                r["ou"] = ou
+                resources.append(r)
+        except (ClientError, BotoCoreError) as e:
+            print(f"[inventory] Error collecting S3 resources: {e}")
+
+        for region in _iter_regions(session):
+            try:
+                ec2_items = _list_ec2_resources(session, region)
+                print(f"[inventory] EC2 ({region}): found {len(ec2_items)} instances")
+                for r in ec2_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting EC2 in {region}: {e}")
+
+            try:
+                rds_items = _list_rds_resources(session, region)
+                print(f"[inventory] RDS ({region}): found {len(rds_items)} instances")
+                for r in rds_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting RDS in {region}: {e}")
+
     seen: set[tuple[str, str]] = set()
     deduped: list[dict[str, object]] = []
     for resource in resources:
@@ -272,6 +355,9 @@ def _collect_live_resources() -> list[dict[str, object]]:
             continue
         seen.add(key)
         deduped.append(resource)
+
+    print(f"[inventory] Total resources collected: {len(deduped)}")
+    set_cached_resources(deduped, tenant_id)
     return deduped
 
 
@@ -325,8 +411,16 @@ def list_resources(
     tag_key: str | None = None,
     tag_value: str | None = None,
     untagged_only: bool = False,
+    tenant_id: str = "default",
+    force_refresh: bool = False,
 ) -> list[dict[str, object]]:
-    items = [deepcopy(resource) for resource in _collect_live_resources()]
+    items = None
+    if not force_refresh:
+        items = get_cached_resources(tenant_id)
+        
+    if items is None:
+        items = [deepcopy(resource) for resource in collect_live_resources(tenant_id)]
+
     return [
         resource
         for resource in items
@@ -342,9 +436,22 @@ def list_resources(
     ]
 
 
-def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str, str]) -> dict[str, object]:
+def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str, str], account_id: str | None = None, tenant_id: str = "default") -> dict[str, object]:
     BotoCoreError, ClientError = _botocore_exceptions()
-    session = _aws_session()
+    # Use base session; only assume role if account_id is a different (cross-) account
+    base_session = _aws_session()
+    if not base_session:
+        raise RuntimeError("Failed to create base AWS session — check credentials")
+
+    current_account = _get_current_account_id(base_session)
+    # Only assume role if account_id is explicitly a different account
+    if account_id and account_id != current_account:
+        session = _aws_session(account_id=account_id)
+        if not session:
+            raise RuntimeError(f"Failed to assume role for account {account_id}")
+    else:
+        session = base_session
+
     resource_type_lower = resource_type.lower().strip()
 
     try:
@@ -354,21 +461,25 @@ def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str
                 Bucket=resource_id,
                 Tagging={"TagSet": [{"Key": key, "Value": value} for key, value in tags.items()]},
             )
+            update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "global", "tags": tags}
 
         if resource_type_lower == "ec2 instance":
             client = session.client("ec2")
             client.create_tags(Resources=[resource_id], Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
+            update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
         if resource_type_lower == "load balancer":
             client = session.client("elbv2")
             client.add_tags(ResourceArns=[resource_id], Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
+            update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
         if resource_type_lower == "rds instance":
             client = session.client("rds")
             client.add_tags_to_resource(ResourceName=resource_id, Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
+            update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
     except (ClientError, BotoCoreError) as exc:

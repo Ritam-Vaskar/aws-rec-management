@@ -19,6 +19,7 @@ type EditState = {
   id: string;
   name: string;
   type: string;
+  account_id: string;
   tagsText: string;
 } | null;
 
@@ -236,15 +237,19 @@ export default function Page() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
   const [regionFilter, setRegionFilter] = useState("All");
+  const [ouFilter, setOuFilter] = useState("All");
+  const [accountFilter, setAccountFilter] = useState("All");
   const [tagFilter, setTagFilter] = useState("");
   const [editing, setEditing] = useState<EditState>(null);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchResources() {
-    setLoading(true);
+  async function fetchResources(force = false) {
+    if (force) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/resources");
+      const response = await fetch(`http://localhost:8000/resources${force ? "?force_refresh=true" : ""}`);
       if (!response.ok) throw new Error(`Failed to load resources (${response.status})`);
       const data = (await response.json()) as Resource[];
       setResources(data);
@@ -252,7 +257,18 @@ export default function Page() {
       setResources([]);
       setError(e instanceof Error ? e.message : "Failed to load resources");
     } finally {
-      setLoading(false);
+      if (force) {
+        setTimeout(async () => {
+          try {
+            const res = await fetch("http://localhost:8000/resources");
+            if (res.ok) setResources((await res.json()) as Resource[]);
+          } finally {
+            setRefreshing(false);
+          }
+        }, 3000);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
@@ -270,6 +286,8 @@ export default function Page() {
           .includes(search.toLowerCase());
       const matchesType = typeFilter === "All" || r.type === typeFilter;
       const matchesRegion = regionFilter === "All" || r.region === regionFilter;
+      const matchesOu = ouFilter === "All" || r.ou === ouFilter;
+      const matchesAccount = accountFilter === "All" || r.account_id === accountFilter;
 
       let matchesTag = true;
       if (tagFilter.trim()) {
@@ -280,12 +298,14 @@ export default function Page() {
           matchesTag = value ? r.tags[key] === value : key in r.tags;
         }
       }
-      return matchesSearch && matchesType && matchesRegion && matchesTag;
+      return matchesSearch && matchesType && matchesRegion && matchesOu && matchesAccount && matchesTag;
     });
-  }, [resources, search, typeFilter, regionFilter, tagFilter]);
+  }, [resources, search, typeFilter, regionFilter, tagFilter, ouFilter, accountFilter]);
 
   const resourceTypes = ["All", ...new Set(resources.map((r) => r.type))];
   const regions = ["All", ...new Set(resources.map((r) => r.region))];
+  const ous = ["All", ...new Set(resources.map((r) => r.ou).filter(Boolean))];
+  const accounts = ["All", ...new Set(resources.map((r) => r.account_id).filter(Boolean))];
   const total = resources.length;
   const untagged = resources.filter((r) => Object.keys(r.tags).length === 0).length;
   const complianceScore = total ? Math.round(((total - untagged) / total) * 100) : 0;
@@ -295,12 +315,13 @@ export default function Page() {
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch("/api/tags/update", {
+      const response = await fetch("http://localhost:8000/tags/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           resource_id: editing.id,
           resource_type: editing.type,
+          account_id: editing.account_id,
           tags: parseTagText(editing.tagsText),
         }),
       });
@@ -405,6 +426,22 @@ export default function Page() {
           </select>
         </div>
         <div className="filter-group">
+          <span className="filter-label">OU</span>
+          <select value={ouFilter} onChange={(e) => setOuFilter(e.target.value)}>
+            {ous.map((o) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+        <div className="filter-group">
+          <span className="filter-label">Account</span>
+          <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)}>
+            {accounts.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+        <div className="filter-group">
           <span className="filter-label">Tag</span>
           <input
             value={tagFilter}
@@ -414,8 +451,8 @@ export default function Page() {
         </div>
         <div className="filter-group" style={{ justifyContent: "flex-end" }}>
           <span className="filter-label">&nbsp;</span>
-          <button className="btn-secondary" onClick={() => void fetchResources()} disabled={loading}>
-            <RefreshIcon /> Refresh
+          <button className="btn-secondary" onClick={() => void fetchResources(true)} disabled={loading || refreshing}>
+            <RefreshIcon /> {refreshing ? "Syncing..." : "Refresh"}
           </button>
         </div>
       </section>
@@ -503,6 +540,7 @@ export default function Page() {
                             id: r.id,
                             name: r.name,
                             type: r.type,
+                            account_id: r.account_id,
                             tagsText: Object.entries(r.tags)
                               .map(([k, v]) => `${k}=${v}`)
                               .join("\n"),
