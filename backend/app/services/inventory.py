@@ -184,6 +184,40 @@ def _list_ec2_resources(session, region: str) -> list[dict[str, object]]:
     return resources
 
 
+def _list_cloudfront_resources(session) -> list[dict[str, object]]:
+    _, ClientError = _botocore_exceptions()
+    client = session.client("cloudfront")
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("list_distributions")
+        for page in paginator.paginate():
+            for dist in page.get("DistributionList", {}).get("Items", []):
+                arn = dist.get("ARN", "")
+                try:
+                    tag_response = client.list_tags_for_resource(Resource=arn)
+                    tag_items = tag_response.get("Tags", {}).get("Items", [])
+                    tags = _clean_tags(tag_items)
+                except ClientError:
+                    tags = {}
+                
+                resources.append(
+                    _normalise_resource(
+                        resource_id=arn,
+                        name=dist.get("DomainName", dist.get("Id", "")),
+                        resource_type="CloudFront Distribution",
+                        region="global",
+                        account_id=_account_id_from_arn(arn) if arn else "",
+                        ou="",
+                        state=dist.get("Status", ""),
+                        created=dist.get("LastModifiedTime").isoformat() if dist.get("LastModifiedTime") else None,
+                        tags=tags,
+                    )
+                )
+    except Exception as e:
+        print(f"[inventory] Error listing CloudFront distributions: {e}")
+    return resources
+
+
 def _list_rds_resources(session, region: str) -> list[dict[str, object]]:
     _, ClientError = _botocore_exceptions()
     client = session.client("rds", region_name=region)
@@ -326,6 +360,16 @@ def collect_live_resources(tenant_id: str = "default") -> list[dict[str, object]
         except (ClientError, BotoCoreError) as e:
             print(f"[inventory] Error collecting S3 resources: {e}")
 
+        try:
+            cf_items = _list_cloudfront_resources(session)
+            print(f"[inventory] CloudFront: found {len(cf_items)} distributions")
+            for r in cf_items:
+                r["account_id"] = effective_account or r.get("account_id", "")
+                r["ou"] = ou
+                resources.append(r)
+        except (ClientError, BotoCoreError) as e:
+            print(f"[inventory] Error collecting CloudFront resources: {e}")
+
         for region in _iter_regions(session):
             try:
                 ec2_items = _list_ec2_resources(session, region)
@@ -346,6 +390,16 @@ def collect_live_resources(tenant_id: str = "default") -> list[dict[str, object]
                     resources.append(r)
             except (ClientError, BotoCoreError) as e:
                 print(f"[inventory] Error collecting RDS in {region}: {e}")
+
+            try:
+                elbv2_items = _list_elbv2_resources(session, region)
+                print(f"[inventory] ELBv2 ({region}): found {len(elbv2_items)} load balancers")
+                for r in elbv2_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting ELBv2 in {region}: {e}")
 
     seen: set[tuple[str, str]] = set()
     deduped: list[dict[str, object]] = []
@@ -481,6 +535,12 @@ def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str
             client.add_tags_to_resource(ResourceName=resource_id, Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
+
+        if resource_type_lower == "cloudfront distribution":
+            client = session.client("cloudfront")
+            client.tag_resource(Resource=resource_id, Tags={"Items": [{"Key": key, "Value": value} for key, value in tags.items()]})
+            update_cached_resource_tags(resource_id, tags, tenant_id)
+            return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "global", "tags": tags}
 
     except (ClientError, BotoCoreError) as exc:
         error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
