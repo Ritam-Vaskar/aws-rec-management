@@ -335,6 +335,38 @@ export default function Page() {
     }
   }
 
+  async function performAction(r: Resource, action: string) {
+    if (action === "terminate" || action === "delete") {
+      if (!window.confirm(`Are you sure you want to ${action} ${r.type} ${r.id}? This cannot be undone.`)) {
+        return;
+      }
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch("http://localhost:8000/operations/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource_id: r.id,
+          resource_type: r.type,
+          action: action,
+          account_id: r.account_id,
+          region: r.region,
+        }),
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to perform ${action} (${response.status})`);
+      }
+      await fetchResources(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `Failed to perform ${action}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <main className="shell">
       {/* ── Header ─────────────────────────────────────────── */}
@@ -495,7 +527,7 @@ export default function Page() {
                   <th>Region</th>
                   <th>State</th>
                   <th>Tags</th>
-                  <th style={{ width: 100 }}></th>
+                  <th style={{ minWidth: 200 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -533,22 +565,43 @@ export default function Page() {
                       )}
                     </td>
                     <td>
-                      <button
-                        className="btn-ghost btn-sm"
-                        onClick={() =>
-                          setEditing({
-                            id: r.id,
-                            name: r.name,
-                            type: r.type,
-                            account_id: r.account_id,
-                            tagsText: Object.entries(r.tags)
-                              .map(([k, v]) => `${k}=${v}`)
-                              .join("\n"),
-                          })
-                        }
-                      >
-                        <EditIcon /> Edit
-                      </button>
+                      <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
+                        <button
+                          className="btn-ghost btn-sm"
+                          onClick={() =>
+                            setEditing({
+                              id: r.id,
+                              name: r.name,
+                              type: r.type,
+                              account_id: r.account_id,
+                              tagsText: Object.entries(r.tags)
+                                .map(([k, v]) => `${k}=${v}`)
+                                .join("\n"),
+                            })
+                          }
+                        >
+                          <EditIcon /> Edit
+                        </button>
+                        
+                        {(r.type.toLowerCase().includes("ec2") || r.type.toLowerCase().includes("rds")) && (
+                          <>
+                            {r.state?.toLowerCase() === "stopped" && (
+                              <button className="btn-ghost btn-sm" onClick={() => void performAction(r, "start")} disabled={saving}>Start</button>
+                            )}
+                            {(r.state?.toLowerCase() === "running" || r.state?.toLowerCase() === "available") && (
+                              <>
+                                <button className="btn-ghost btn-sm" onClick={() => void performAction(r, "stop")} disabled={saving}>Stop</button>
+                                <button className="btn-ghost btn-sm" onClick={() => void performAction(r, "reboot")} disabled={saving}>Reboot</button>
+                              </>
+                            )}
+                            <button className="btn-ghost btn-sm btn-danger" onClick={() => void performAction(r, "terminate")} disabled={saving}>Terminate</button>
+                          </>
+                        )}
+
+                        {r.type.toLowerCase().includes("s3") && (
+                          <button className="btn-ghost btn-sm btn-danger" onClick={() => void performAction(r, "delete")} disabled={saving}>Delete</button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
