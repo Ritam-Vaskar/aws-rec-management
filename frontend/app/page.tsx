@@ -243,6 +243,18 @@ export default function Page() {
   const [editing, setEditing] = useState<EditState>(null);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [user, setUser] = useState<{ email: string; authenticated: boolean } | null>(null);
+
+  async function fetchUser() {
+    try {
+      const res = await fetch("http://localhost:8000/auth/me");
+      if (res.ok) {
+        setUser(await res.json());
+      }
+    } catch (e) {
+      console.error("Failed to fetch user:", e);
+    }
+  }
 
   async function fetchResources(force = false) {
     if (force) setRefreshing(true);
@@ -273,6 +285,7 @@ export default function Page() {
   }
 
   useEffect(() => {
+    void fetchUser();
     void fetchResources();
   }, []);
 
@@ -346,6 +359,12 @@ export default function Page() {
           </div>
         </div>
         <div className="header-right">
+          {user && (
+            <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginRight: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: user.authenticated ? "var(--success)" : "var(--warning)" }}></div>
+              {user.email}
+            </div>
+          )}
           <ThemeToggle />
         </div>
       </header>
