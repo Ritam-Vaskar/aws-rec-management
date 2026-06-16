@@ -15,6 +15,13 @@ type Resource = {
   tags: Record<string, string>;
 };
 
+type DashboardUser = {
+  name?: string;
+  email?: string;
+  tenant?: string;
+  roles: string[];
+};
+
 type EditState = {
   id: string;
   name: string;
@@ -232,6 +239,7 @@ function ThemeToggle() {
 
 export default function Page() {
   const [resources, setResources] = useState<Resource[]>([]);
+  const [user, setUser] = useState<DashboardUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -249,7 +257,11 @@ export default function Page() {
     else setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`http://localhost:8000/resources${force ? "?force_refresh=true" : ""}`);
+      const response = await fetch(`/api/resources${force ? "?force_refresh=true" : ""}`);
+      if (response.status === 401) {
+        window.location.href = "/api/auth/login";
+        return;
+      }
       if (!response.ok) throw new Error(`Failed to load resources (${response.status})`);
       const data = (await response.json()) as Resource[];
       setResources(data);
@@ -260,7 +272,7 @@ export default function Page() {
       if (force) {
         setTimeout(async () => {
           try {
-            const res = await fetch("http://localhost:8000/resources");
+            const res = await fetch("/api/resources");
             if (res.ok) setResources((await res.json()) as Resource[]);
           } finally {
             setRefreshing(false);
@@ -273,7 +285,24 @@ export default function Page() {
   }
 
   useEffect(() => {
-    void fetchResources();
+    async function boot() {
+      try {
+        const session = await fetch("/api/auth/me", { cache: "no-store" });
+        if (session.status === 401) {
+          window.location.href = "/api/auth/login";
+          return;
+        }
+        if (session.ok) {
+          const data = (await session.json()) as { user: DashboardUser };
+          setUser(data.user);
+        }
+        await fetchResources();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to start session");
+        setLoading(false);
+      }
+    }
+    void boot();
   }, []);
 
   const filtered = useMemo(() => {
@@ -309,13 +338,14 @@ export default function Page() {
   const total = resources.length;
   const untagged = resources.filter((r) => Object.keys(r.tags).length === 0).length;
   const complianceScore = total ? Math.round(((total - untagged) / total) * 100) : 0;
+  const canEditTags = user?.roles.includes("tag_editor") || user?.roles.includes("admin");
 
   async function saveTags() {
     if (!editing) return;
     setSaving(true);
     setError(null);
     try {
-      const response = await fetch("http://localhost:8000/tags/update", {
+      const response = await fetch("/api/tags/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -325,6 +355,10 @@ export default function Page() {
           tags: parseTagText(editing.tagsText),
         }),
       });
+      if (response.status === 401) {
+        window.location.href = "/api/auth/login";
+        return;
+      }
       if (!response.ok) throw new Error(`Failed to update tags (${response.status})`);
       setEditing(null);
       await fetchResources();
@@ -346,6 +380,12 @@ export default function Page() {
           </div>
         </div>
         <div className="header-right">
+          {user ? (
+            <div className="table-toolbar-left">
+              <span className="table-toolbar-title">{user.name || user.email || "Signed in"}</span>
+              <a className="btn-secondary btn-sm" href="/api/auth/logout">Sign out</a>
+            </div>
+          ) : null}
           <ThemeToggle />
         </div>
       </header>
@@ -533,22 +573,24 @@ export default function Page() {
                       )}
                     </td>
                     <td>
-                      <button
-                        className="btn-ghost btn-sm"
-                        onClick={() =>
-                          setEditing({
-                            id: r.id,
-                            name: r.name,
-                            type: r.type,
-                            account_id: r.account_id,
-                            tagsText: Object.entries(r.tags)
-                              .map(([k, v]) => `${k}=${v}`)
-                              .join("\n"),
-                          })
-                        }
-                      >
-                        <EditIcon /> Edit
-                      </button>
+                      {canEditTags ? (
+                        <button
+                          className="btn-ghost btn-sm"
+                          onClick={() =>
+                            setEditing({
+                              id: r.id,
+                              name: r.name,
+                              type: r.type,
+                              account_id: r.account_id,
+                              tagsText: Object.entries(r.tags)
+                                .map(([k, v]) => `${k}=${v}`)
+                                .join("\n"),
+                            })
+                          }
+                        >
+                          <EditIcon /> Edit
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

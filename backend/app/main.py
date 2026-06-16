@@ -1,5 +1,5 @@
-import os
 from pathlib import Path
+import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -16,7 +16,7 @@ app = FastAPI(title="AWS Resource Governance Dashboard API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
