@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
 
 import { getBackendUrl } from "@/lib/backend-url";
+import { getDashboardSession } from "@/lib/server-auth";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const session = getDashboardSession();
+  if (!session) return NextResponse.json({ detail: "Authentication required." }, { status: 401 });
+
   try {
-    const response = await fetch(`${getBackendUrl()}/resources`, {
+    const url = new URL(request.url);
+    const response = await fetch(`${getBackendUrl()}/resources${url.search}`, {
+      headers: {
+        Authorization: `Bearer ${session.accessToken}`,
+      },
       cache: "no-store",
     });
 

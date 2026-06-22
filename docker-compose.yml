@@ -10,6 +10,7 @@ services:
       - ./backend:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - CORS_ALLOW_ORIGINS=http://localhost:3000
     env_file:
       - .env
     depends_on:
@@ -26,8 +27,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
       - INTERNAL_API_URL=http://backend:8000
+      - APP_BASE_URL=http://localhost:3000
     volumes:
       - ./frontend:/app
       - /app/node_modules

@@ -17,14 +17,21 @@ def _botocore_exceptions():
     return exceptions_module.BotoCoreError, exceptions_module.ClientError
 
 
-def _aws_session(account_id: str | None = None):
+def _aws_session(
+    account_id: str | None = None,
+    *,
+    role_name: str | None = None,
+    role_session_name: str | None = None,
+):
     boto3 = _boto3()
     region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     access_key = os.getenv("AWS_ACCESS_KEY_ID") or None
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY") or None
     session_token = os.getenv("AWS_SESSION_TOKEN") or None
     role_arn = os.getenv("AWS_ASSUME_ROLE_ARN") or None
-    role_session_name = os.getenv("AWS_ASSUME_ROLE_SESSION_NAME", "aws-dash-dashboard")
+    default_role_name = os.getenv("AWS_ORG_ACCESS_ROLE_NAME", "OrganizationAccountAccessRole")
+    effective_role_name = role_name or default_role_name
+    effective_session_name = role_session_name or os.getenv("AWS_ASSUME_ROLE_SESSION_NAME", "aws-dash-dashboard")
 
     if access_key and secret_key:
         session = boto3.Session(
@@ -40,8 +47,8 @@ def _aws_session(account_id: str | None = None):
 
     if account_id:
         try:
-            target_role = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
-            assumed = sts.assume_role(RoleArn=target_role, RoleSessionName="DashboardOrgSession")
+            target_role = f"arn:aws:iam::{account_id}:role/{effective_role_name}"
+            assumed = sts.assume_role(RoleArn=target_role, RoleSessionName=effective_session_name)
             credentials = assumed["Credentials"]
             return boto3.Session(
                 aws_access_key_id=credentials["AccessKeyId"],
@@ -56,7 +63,7 @@ def _aws_session(account_id: str | None = None):
     if not role_arn:
         return session
 
-    assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName=role_session_name)
+    assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName=effective_session_name)
     credentials = assumed["Credentials"]
     return boto3.Session(
         aws_access_key_id=credentials["AccessKeyId"],
@@ -320,21 +327,40 @@ def _get_current_account_id(session) -> str:
         return ""
 
 
-def collect_live_resources(tenant_id: str = "default") -> list[dict[str, object]]:
+def _filter_accounts(
+    accounts: list[dict[str, str | None]],
+    allowed_account_ids: frozenset[str] | set[str] | None,
+) -> list[dict[str, str | None]]:
+    if allowed_account_ids is None:
+        return accounts
+    return [account for account in accounts if account.get("account_id") in allowed_account_ids]
+
+
+def collect_live_resources(
+    tenant_id: str = "default",
+    allowed_account_ids: frozenset[str] | set[str] | None = None,
+) -> list[dict[str, object]]:
     BotoCoreError, ClientError = _botocore_exceptions()
     base_session = _aws_session()
     if not base_session:
         print("[inventory] ERROR: Could not create AWS session — check credentials")
         return []
 
+    base_account_id = _get_current_account_id(base_session)
+
     resources: list[dict[str, object]] = []
 
     # Try org accounts first; fall back to single-account mode
     accounts = _get_org_accounts(base_session)
     if not accounts:
-        current_account_id = _get_current_account_id(base_session)
-        print(f"[inventory] No org accounts found — falling back to current account: {current_account_id or 'unknown'}")
-        accounts = [{"account_id": None, "ou": "Default"}]
+        print(f"[inventory] No org accounts found — falling back to current account: {base_account_id or 'unknown'}")
+        accounts = [{"account_id": base_account_id or None, "ou": "Default"}]
+
+    accounts = _filter_accounts(accounts, allowed_account_ids)
+    if not accounts:
+        print("[inventory] No allowed AWS accounts for this user scope")
+        set_cached_resources([], tenant_id)
+        return []
 
     print(f"[inventory] Scanning {len(accounts)} account(s)")
 
@@ -342,7 +368,7 @@ def collect_live_resources(tenant_id: str = "default") -> list[dict[str, object]
         account_id = acc["account_id"]
         ou = acc["ou"]
 
-        session = _aws_session(account_id=account_id) if account_id else base_session
+        session = _aws_session(account_id=account_id) if account_id and account_id != base_account_id else base_session
         if not session:
             print(f"[inventory] Skipping account {account_id} — could not assume role")
             continue
@@ -466,6 +492,7 @@ def list_resources(
     tag_value: str | None = None,
     untagged_only: bool = False,
     tenant_id: str = "default",
+    allowed_account_ids: frozenset[str] | set[str] | None = None,
     force_refresh: bool = False,
 ) -> list[dict[str, object]]:
     items = None
@@ -473,11 +500,12 @@ def list_resources(
         items = get_cached_resources(tenant_id)
         
     if items is None:
-        items = [deepcopy(resource) for resource in collect_live_resources(tenant_id)]
+        items = [deepcopy(resource) for resource in collect_live_resources(tenant_id, allowed_account_ids)]
 
     return [
         resource
         for resource in items
+        if allowed_account_ids is None or str(resource.get("account_id", "")) in allowed_account_ids
         if _resource_matches(
             resource,
             search=search,
@@ -490,7 +518,18 @@ def list_resources(
     ]
 
 
-def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str, str], account_id: str | None = None, tenant_id: str = "default") -> dict[str, object]:
+def update_resource_tags(
+    *,
+    resource_id: str,
+    resource_type: str,
+    tags: dict[str, str],
+    account_id: str | None = None,
+    tenant_id: str = "default",
+    allowed_account_ids: frozenset[str] | set[str] | None = None,
+) -> dict[str, object]:
+    if allowed_account_ids is not None and account_id and account_id not in allowed_account_ids:
+        raise PermissionError(f"Account {account_id} is outside the allowed scope")
+
     BotoCoreError, ClientError = _botocore_exceptions()
     # Use base session; only assume role if account_id is a different (cross-) account
     base_session = _aws_session()
@@ -500,7 +539,8 @@ def update_resource_tags(*, resource_id: str, resource_type: str, tags: dict[str
     current_account = _get_current_account_id(base_session)
     # Only assume role if account_id is explicitly a different account
     if account_id and account_id != current_account:
-        session = _aws_session(account_id=account_id)
+        tagging_role_name = os.getenv("AWS_TAGGING_ROLE_NAME") or os.getenv("AWS_ORG_ACCESS_ROLE_NAME", "OrganizationAccountAccessRole")
+        session = _aws_session(account_id=account_id, role_name=tagging_role_name, role_session_name="AwsDashTagUpdate")
         if not session:
             raise RuntimeError(f"Failed to assume role for account {account_id}")
     else:
