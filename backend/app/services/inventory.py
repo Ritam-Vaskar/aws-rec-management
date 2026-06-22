@@ -137,7 +137,6 @@ def _list_s3_resources(session) -> list[dict[str, object]]:
     _, ClientError = _botocore_exceptions()
     client = session.client("s3")
     resources: list[dict[str, object]] = []
-    base_account_id = _get_current_account_id(base_session)
     for bucket in client.list_buckets().get("Buckets", []):
         bucket_name = bucket.get("Name", "")
         try:
@@ -346,6 +345,8 @@ def collect_live_resources(
     if not base_session:
         print("[inventory] ERROR: Could not create AWS session — check credentials")
         return []
+
+    base_account_id = _get_current_account_id(base_session)
 
     resources: list[dict[str, object]] = []
 

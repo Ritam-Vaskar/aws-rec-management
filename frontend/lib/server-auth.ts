@@ -105,7 +105,7 @@ export function sessionFromTokenSet(tokenSet: Record<string, unknown>): Dashboar
 }
 
 export function getDashboardSession(): DashboardSession | null {
-  if (process.env.AUTH_BYPASS_LOGIN === "false") {
+  if (process.env.AUTH_BYPASS_LOGIN === "true") {
     return {
       accessToken: "local-dev",
       expiresAt: Math.floor(Date.now() / 1000) + 3600,
