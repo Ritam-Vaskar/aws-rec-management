@@ -20,6 +20,7 @@ type DashboardUser = {
   email?: string;
   tenant?: string;
   roles: string[];
+  expiringSoon?: boolean;
 };
 
 type EditState = {
@@ -242,6 +243,7 @@ export default function Page() {
   const [user, setUser] = useState<DashboardUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expiringSoon, setExpiringSoon] = useState(false);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
   const [regionFilter, setRegionFilter] = useState("All");
@@ -285,18 +287,31 @@ export default function Page() {
   }
 
   useEffect(() => {
+    async function checkSession() {
+      const session = await fetch("/api/auth/me", { cache: "no-store" });
+      if (session.status === 401) {
+        window.location.href = "/api/auth/login";
+        return false;
+      }
+      if (session.ok) {
+        const data = (await session.json()) as { user: DashboardUser; expiringSoon?: boolean };
+        setUser(data.user);
+        setExpiringSoon(data.expiringSoon ?? false);
+      }
+      return true;
+    }
+
     async function boot() {
       try {
-        const session = await fetch("/api/auth/me", { cache: "no-store" });
-        if (session.status === 401) {
-          window.location.href = "/api/auth/login";
-          return;
-        }
-        if (session.ok) {
-          const data = (await session.json()) as { user: DashboardUser };
-          setUser(data.user);
-        }
+        const ok = await checkSession();
+        if (!ok) return;
         await fetchResources();
+
+        // Re-check session health every 60 seconds; redirect to login if expired
+        const interval = setInterval(async () => {
+          await checkSession();
+        }, 60_000);
+        return () => clearInterval(interval);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to start session");
         setLoading(false);
@@ -389,6 +404,16 @@ export default function Page() {
           <ThemeToggle />
         </div>
       </header>
+
+      {/* ── Session Expiry Banner ───────────────────────────── */}
+      {expiringSoon ? (
+        <div className="expiry-banner">
+          <span>⚠️ Your session expires in less than 5 minutes.</span>
+          <a className="btn-sm btn-primary" href="/api/auth/login">
+            Re-authenticate
+          </a>
+        </div>
+      ) : null}
 
       {/* ── Stats ──────────────────────────────────────────── */}
       <section className="stats-row">

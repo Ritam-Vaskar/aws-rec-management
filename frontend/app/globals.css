@@ -218,6 +218,46 @@ h3 { font-size: 1rem; font-weight: 600; line-height: 1.4; }
   gap: 0.5rem;
 }
 
+/* ── Session Expiry Banner ──────────────────────────────────── */
+
+.expiry-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1rem;
+  border-radius: 10px;
+  background: var(--warning-subtle);
+  border: 1px solid var(--c-accent-300);
+  color: var(--c-accent-700);
+  font-size: 0.85rem;
+  font-weight: 500;
+  animation: fadeIn 0.25s ease;
+}
+
+[data-theme="dark"] .expiry-banner {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(251, 191, 36, 0.3);
+  color: var(--c-accent-300);
+}
+
+.expiry-banner a.btn-primary {
+  flex-shrink: 0;
+  text-decoration: none;
+  color: var(--text-on-primary);
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--c-accent-500);
+  transition: background 0.15s ease;
+}
+
+.expiry-banner a.btn-primary:hover {
+  background: var(--c-accent-600);
+}
+
 /* ── Theme Toggle ──────────────────────────────────────────── */
 
 .theme-toggle {

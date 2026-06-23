@@ -18,6 +18,9 @@ export type DashboardSession = {
 export const sessionCookieName = "__Host-aws_dash_session";
 export const oidcStateCookieName = "__Host-aws_dash_oidc_state";
 
+/** Sessions with less than this many seconds remaining are considered near-expiry. */
+const EXPIRY_BUFFER_SECONDS = 5 * 60; // 5 minutes
+
 function base64url(input: Buffer) {
   return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
@@ -104,6 +107,11 @@ export function sessionFromTokenSet(tokenSet: Record<string, unknown>): Dashboar
   };
 }
 
+/** Returns true when the session has expired or is within EXPIRY_BUFFER_SECONDS of expiry. */
+export function isSessionExpiringSoon(session: DashboardSession): boolean {
+  return session.expiresAt <= Math.floor(Date.now() / 1000) + EXPIRY_BUFFER_SECONDS;
+}
+
 export function getDashboardSession(): DashboardSession | null {
   if (process.env.AUTH_BYPASS_LOGIN === "true") {
     return {
@@ -122,7 +130,14 @@ export function getDashboardSession(): DashboardSession | null {
 
   const raw = cookies().get(sessionCookieName)?.value;
   if (!raw) return null;
-  const session = decryptJson<DashboardSession>(raw);
-  if (session.expiresAt <= Math.floor(Date.now() / 1000)) return null;
-  return session;
+  try {
+    const session = decryptJson<DashboardSession>(raw);
+    // Reject sessions that are fully expired (not just near-expiry)
+    if (session.expiresAt <= Math.floor(Date.now() / 1000)) return null;
+    return session;
+  } catch {
+    // Tampered or corrupt cookie
+    return null;
+  }
 }
+

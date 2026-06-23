@@ -133,7 +133,7 @@ def _account_id_from_arn(resource_arn: str) -> str:
     return parts[4] if len(parts) > 4 else ""
 
 
-def _list_s3_resources(session) -> list[dict[str, object]]:
+def _list_s3_resources(session, account_id: str = "") -> list[dict[str, object]]:
     _, ClientError = _botocore_exceptions()
     client = session.client("s3")
     resources: list[dict[str, object]] = []
@@ -156,7 +156,7 @@ def _list_s3_resources(session) -> list[dict[str, object]]:
                 name=bucket_name,
                 resource_type="S3 Bucket",
                 region="global",
-                account_id="",
+                account_id=account_id,  # populated by caller from STS identity
                 ou="",
                 state="available",
                 created=created.isoformat() if created else None,
@@ -311,7 +311,18 @@ def _list_tagged_resources(session, region: str) -> list[dict[str, object]]:
 
 
 def _iter_regions(session) -> list[str]:
-    """Get list of regions to query. For performance, only use the configured region."""
+    """
+    Get the list of regions to scan.
+
+    Set ``AWS_SCAN_REGIONS`` to a comma-separated list of regions for multi-region
+    scanning (e.g. ``us-east-1,eu-west-1,ap-south-1``).  When unset, only the
+    configured default region is used (preserves the original single-region behaviour).
+    """
+    raw = os.getenv("AWS_SCAN_REGIONS", "").strip()
+    if raw:
+        regions = [r.strip() for r in raw.split(",") if r.strip()]
+        if regions:
+            return regions
     region = session.region_name or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     return [region]
 
@@ -377,10 +388,9 @@ def collect_live_resources(
         print(f"[inventory] Scanning account={effective_account or 'unknown'} ou={ou}")
 
         try:
-            s3_items = _list_s3_resources(session)
+            s3_items = _list_s3_resources(session, account_id=effective_account)
             print(f"[inventory] S3: found {len(s3_items)} buckets")
             for r in s3_items:
-                r["account_id"] = effective_account or r.get("account_id", "")
                 r["ou"] = ou
                 resources.append(r)
         except (ClientError, BotoCoreError) as e:
