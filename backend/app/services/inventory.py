@@ -100,7 +100,15 @@ def _get_org_accounts(session) -> list[dict[str, str]]:
 
 
 def _clean_tags(raw_tags: Iterable[dict[str, str]] | None) -> dict[str, str]:
-    return {tag.get("Key", ""): tag.get("Value", "") for tag in raw_tags or [] if tag.get("Key")}
+    res = {}
+    for tag in raw_tags or []:
+        k = tag.get("Key") or tag.get("key")
+        if k:
+            v = tag.get("Value")
+            if v is None:
+                v = tag.get("value", "")
+            res[k] = v
+    return res
 
 
 def _normalise_resource(
@@ -316,6 +324,42 @@ def _list_lambda_resources(session, region: str) -> list[dict[str, object]]:
     return resources
 
 
+def _list_ecs_resources(session, region: str) -> list[dict[str, object]]:
+    _, ClientError = _botocore_exceptions()
+    client = session.client("ecs", region_name=region)
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("list_clusters")
+        for page in paginator.paginate():
+            cluster_arns = page.get("clusterArns", [])
+            if not cluster_arns:
+                continue
+            
+            try:
+                desc_resp = client.describe_clusters(clusters=cluster_arns, include=["TAGS"])
+                for cluster in desc_resp.get("clusters", []):
+                    arn = cluster.get("clusterArn", "")
+                    tags = _clean_tags(cluster.get("tags"))
+                    resources.append(
+                        _normalise_resource(
+                            resource_id=arn,
+                            name=cluster.get("clusterName", arn),
+                            resource_type="ECS Cluster",
+                            region=region,
+                            account_id=_account_id_from_arn(arn) if arn else "",
+                            ou="",
+                            state=cluster.get("status", ""),
+                            created=None,
+                            tags=tags,
+                        )
+                    )
+            except ClientError:
+                pass
+    except Exception as e:
+        print(f"[inventory] Error listing ECS clusters: {e}")
+    return resources
+
+
 def _list_tagged_resources(session, region: str) -> list[dict[str, object]]:
     client = session.client("resourcegroupstaggingapi", region_name=region)
     resources: list[dict[str, object]] = []
@@ -477,6 +521,16 @@ def collect_live_resources(
             except (ClientError, BotoCoreError) as e:
                 print(f"[inventory] Error collecting Lambda in {region}: {e}")
 
+            try:
+                ecs_items = _list_ecs_resources(session, region)
+                print(f"[inventory] ECS ({region}): found {len(ecs_items)} clusters")
+                for r in ecs_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting ECS in {region}: {e}")
+
     seen: set[tuple[str, str]] = set()
     deduped: list[dict[str, object]] = []
     for resource in resources:
@@ -637,6 +691,14 @@ def update_resource_tags(
             region_name = arn_parts[3] if len(arn_parts) > 3 else None
             client = session.client("lambda", region_name=region_name) if region_name else session.client("lambda")
             client.tag_resource(Resource=resource_id, Tags=tags)
+            update_cached_resource_tags(resource_id, tags, tenant_id)
+            return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
+
+        if resource_type_lower == "ecs cluster":
+            arn_parts = resource_id.split(":")
+            region_name = arn_parts[3] if len(arn_parts) > 3 else None
+            client = session.client("ecs", region_name=region_name) if region_name else session.client("ecs")
+            client.tag_resource(resourceArn=resource_id, tags=[{"key": k, "value": v} for k, v in tags.items()])
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 
