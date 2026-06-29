@@ -286,6 +286,36 @@ def _list_elbv2_resources(session, region: str) -> list[dict[str, object]]:
     return resources
 
 
+def _list_lambda_resources(session, region: str) -> list[dict[str, object]]:
+    _, ClientError = _botocore_exceptions()
+    client = session.client("lambda", region_name=region)
+    resources: list[dict[str, object]] = []
+    paginator = client.get_paginator("list_functions")
+    for page in paginator.paginate():
+        for func in page.get("Functions", []):
+            arn = func.get("FunctionArn", "")
+            try:
+                tag_response = client.list_tags(Resource=arn)
+                tags = tag_response.get("Tags", {})
+            except ClientError:
+                tags = {}
+
+            resources.append(
+                _normalise_resource(
+                    resource_id=arn,
+                    name=func.get("FunctionName", arn),
+                    resource_type="Lambda Function",
+                    region=region,
+                    account_id=_account_id_from_arn(arn) if arn else "",
+                    ou="",
+                    state=func.get("State", ""),
+                    created=func.get("LastModified"),
+                    tags=tags,
+                )
+            )
+    return resources
+
+
 def _list_tagged_resources(session, region: str) -> list[dict[str, object]]:
     client = session.client("resourcegroupstaggingapi", region_name=region)
     resources: list[dict[str, object]] = []
@@ -436,6 +466,16 @@ def collect_live_resources(
                     resources.append(r)
             except (ClientError, BotoCoreError) as e:
                 print(f"[inventory] Error collecting ELBv2 in {region}: {e}")
+
+            try:
+                lambda_items = _list_lambda_resources(session, region)
+                print(f"[inventory] Lambda ({region}): found {len(lambda_items)} functions")
+                for r in lambda_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting Lambda in {region}: {e}")
 
     seen: set[tuple[str, str]] = set()
     deduped: list[dict[str, object]] = []
@@ -591,6 +631,14 @@ def update_resource_tags(
             client.tag_resource(Resource=resource_id, Tags={"Items": [{"Key": key, "Value": value} for key, value in tags.items()]})
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "global", "tags": tags}
+
+        if resource_type_lower == "lambda function":
+            arn_parts = resource_id.split(":")
+            region_name = arn_parts[3] if len(arn_parts) > 3 else None
+            client = session.client("lambda", region_name=region_name) if region_name else session.client("lambda")
+            client.tag_resource(Resource=resource_id, Tags=tags)
+            update_cached_resource_tags(resource_id, tags, tenant_id)
+            return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 
     except (ClientError, BotoCoreError) as exc:
         error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
