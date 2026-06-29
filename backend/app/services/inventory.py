@@ -280,6 +280,80 @@ def _list_sg_resources(session, region: str) -> list[dict[str, object]]:
     return resources
 
 
+def _list_dynamodb_resources(session, region: str) -> list[dict[str, object]]:
+    client = session.client("dynamodb", region_name=region)
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("list_tables")
+        for page in paginator.paginate():
+            for table_name in page.get("TableNames", []):
+                try:
+                    desc = client.describe_table(TableName=table_name).get("Table", {})
+                    arn = desc.get("TableArn", "")
+                    if arn:
+                        tag_resp = client.list_tags_of_resource(ResourceArn=arn)
+                        tags = _clean_tags(tag_resp.get("Tags"))
+                    else:
+                        tags = {}
+                        
+                    created = desc.get("CreationDateTime")
+                    resources.append(
+                        _normalise_resource(
+                            resource_id=arn or table_name,
+                            name=table_name,
+                            resource_type="DynamoDB Table",
+                            region=region,
+                            account_id=_account_id_from_arn(arn) if arn else "",
+                            ou="",
+                            state=desc.get("TableStatus", ""),
+                            created=created.isoformat() if created else None,
+                            tags=tags,
+                        )
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[inventory] Error listing DynamoDB Tables: {e}")
+    return resources
+
+
+def _list_elasticache_resources(session, region: str) -> list[dict[str, object]]:
+    client = session.client("elasticache", region_name=region)
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("describe_cache_clusters")
+        for page in paginator.paginate():
+            for cluster in page.get("CacheClusters", []):
+                arn = cluster.get("ARN", "")
+                try:
+                    if arn:
+                        tag_resp = client.list_tags_for_resource(ResourceName=arn)
+                        tags = _clean_tags(tag_resp.get("TagList"))
+                    else:
+                        tags = {}
+                except Exception:
+                    tags = {}
+
+                created = cluster.get("CacheClusterCreateTime")
+                cluster_id = cluster.get("CacheClusterId", "")
+                resources.append(
+                    _normalise_resource(
+                        resource_id=arn or cluster_id,
+                        name=cluster_id,
+                        resource_type="ElastiCache Cluster",
+                        region=region,
+                        account_id=_account_id_from_arn(arn) if arn else "",
+                        ou="",
+                        state=cluster.get("CacheClusterStatus", ""),
+                        created=created.isoformat() if created else None,
+                        tags=tags,
+                    )
+                )
+    except Exception as e:
+        print(f"[inventory] Error listing ElastiCache Clusters: {e}")
+    return resources
+
+
 def _list_cloudfront_resources(session) -> list[dict[str, object]]:
     _, ClientError = _botocore_exceptions()
     client = session.client("cloudfront")
@@ -603,6 +677,26 @@ def collect_live_resources(
                 print(f"[inventory] Error collecting Security Groups in {region}: {e}")
 
             try:
+                dynamodb_items = _list_dynamodb_resources(session, region)
+                print(f"[inventory] DynamoDB ({region}): found {len(dynamodb_items)} tables")
+                for r in dynamodb_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting DynamoDB in {region}: {e}")
+
+            try:
+                elasticache_items = _list_elasticache_resources(session, region)
+                print(f"[inventory] ElastiCache ({region}): found {len(elasticache_items)} clusters")
+                for r in elasticache_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting ElastiCache in {region}: {e}")
+
+            try:
                 rds_items = _list_rds_resources(session, region)
                 print(f"[inventory] RDS ({region}): found {len(rds_items)} instances")
                 for r in rds_items:
@@ -810,6 +904,22 @@ def update_resource_tags(
             region_name = arn_parts[3] if len(arn_parts) > 3 else None
             client = session.client("ecs", region_name=region_name) if region_name else session.client("ecs")
             client.tag_resource(resourceArn=resource_id, tags=[{"key": k, "value": v} for k, v in tags.items()])
+            update_cached_resource_tags(resource_id, tags, tenant_id)
+            return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
+
+        if resource_type_lower == "dynamodb table":
+            arn_parts = resource_id.split(":")
+            region_name = arn_parts[3] if len(arn_parts) > 3 else None
+            client = session.client("dynamodb", region_name=region_name) if region_name else session.client("dynamodb")
+            client.tag_resource(ResourceArn=resource_id, Tags=[{"Key": k, "Value": v} for k, v in tags.items()])
+            update_cached_resource_tags(resource_id, tags, tenant_id)
+            return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
+
+        if resource_type_lower == "elasticache cluster":
+            arn_parts = resource_id.split(":")
+            region_name = arn_parts[3] if len(arn_parts) > 3 else None
+            client = session.client("elasticache", region_name=region_name) if region_name else session.client("elasticache")
+            client.add_tags_to_resource(ResourceName=resource_id, Tags=[{"Key": k, "Value": v} for k, v in tags.items()])
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 
