@@ -199,6 +199,87 @@ def _list_ec2_resources(session, region: str) -> list[dict[str, object]]:
     return resources
 
 
+def _list_vpc_resources(session, region: str) -> list[dict[str, object]]:
+    client = session.client("ec2", region_name=region)
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("describe_vpcs")
+        for page in paginator.paginate():
+            for vpc in page.get("Vpcs", []):
+                tags = _clean_tags(vpc.get("Tags"))
+                resource_id = vpc.get("VpcId", "")
+                resources.append(
+                    _normalise_resource(
+                        resource_id=resource_id,
+                        name=tags.get("Name", resource_id),
+                        resource_type="VPC",
+                        region=region,
+                        account_id=vpc.get("OwnerId", ""),
+                        ou="",
+                        state=vpc.get("State", ""),
+                        created=None,
+                        tags=tags,
+                    )
+                )
+    except Exception as e:
+        print(f"[inventory] Error listing VPCs: {e}")
+    return resources
+
+
+def _list_subnet_resources(session, region: str) -> list[dict[str, object]]:
+    client = session.client("ec2", region_name=region)
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("describe_subnets")
+        for page in paginator.paginate():
+            for subnet in page.get("Subnets", []):
+                tags = _clean_tags(subnet.get("Tags"))
+                resource_id = subnet.get("SubnetId", "")
+                resources.append(
+                    _normalise_resource(
+                        resource_id=resource_id,
+                        name=tags.get("Name", resource_id),
+                        resource_type="Subnet",
+                        region=region,
+                        account_id=subnet.get("OwnerId", ""),
+                        ou="",
+                        state=subnet.get("State", ""),
+                        created=None,
+                        tags=tags,
+                    )
+                )
+    except Exception as e:
+        print(f"[inventory] Error listing Subnets: {e}")
+    return resources
+
+
+def _list_sg_resources(session, region: str) -> list[dict[str, object]]:
+    client = session.client("ec2", region_name=region)
+    resources: list[dict[str, object]] = []
+    try:
+        paginator = client.get_paginator("describe_security_groups")
+        for page in paginator.paginate():
+            for sg in page.get("SecurityGroups", []):
+                tags = _clean_tags(sg.get("Tags"))
+                resource_id = sg.get("GroupId", "")
+                resources.append(
+                    _normalise_resource(
+                        resource_id=resource_id,
+                        name=tags.get("Name", sg.get("GroupName", resource_id)),
+                        resource_type="Security Group",
+                        region=region,
+                        account_id=sg.get("OwnerId", ""),
+                        ou="",
+                        state="",
+                        created=None,
+                        tags=tags,
+                    )
+                )
+    except Exception as e:
+        print(f"[inventory] Error listing Security Groups: {e}")
+    return resources
+
+
 def _list_cloudfront_resources(session) -> list[dict[str, object]]:
     _, ClientError = _botocore_exceptions()
     client = session.client("cloudfront")
@@ -492,6 +573,36 @@ def collect_live_resources(
                 print(f"[inventory] Error collecting EC2 in {region}: {e}")
 
             try:
+                vpc_items = _list_vpc_resources(session, region)
+                print(f"[inventory] VPC ({region}): found {len(vpc_items)} vpcs")
+                for r in vpc_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting VPCs in {region}: {e}")
+
+            try:
+                subnet_items = _list_subnet_resources(session, region)
+                print(f"[inventory] Subnet ({region}): found {len(subnet_items)} subnets")
+                for r in subnet_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting Subnets in {region}: {e}")
+
+            try:
+                sg_items = _list_sg_resources(session, region)
+                print(f"[inventory] Security Group ({region}): found {len(sg_items)} groups")
+                for r in sg_items:
+                    r["account_id"] = effective_account or r.get("account_id", "")
+                    r["ou"] = ou
+                    resources.append(r)
+            except (ClientError, BotoCoreError) as e:
+                print(f"[inventory] Error collecting Security Groups in {region}: {e}")
+
+            try:
                 rds_items = _list_rds_resources(session, region)
                 print(f"[inventory] RDS ({region}): found {len(rds_items)} instances")
                 for r in rds_items:
@@ -662,7 +773,7 @@ def update_resource_tags(
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "global", "tags": tags}
 
-        if resource_type_lower == "ec2 instance":
+        if resource_type_lower in ("ec2 instance", "vpc", "subnet", "security group"):
             client = session.client("ec2")
             client.create_tags(Resources=[resource_id], Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
             update_cached_resource_tags(resource_id, tags, tenant_id)
