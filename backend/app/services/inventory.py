@@ -930,3 +930,60 @@ def update_resource_tags(
         raise RuntimeError(str(exc)) from exc
 
     raise KeyError(f"Unsupported resource type: {resource_type}")
+
+
+def get_accounts_with_ou(
+    tenant_id: str = "default",
+    allowed_account_ids: frozenset[str] | set[str] | None = None,
+) -> list[dict[str, object]]:
+    # Get all resources to compute counts and compliance
+    resources = list_resources(
+        tenant_id=tenant_id,
+        allowed_account_ids=allowed_account_ids,
+    )
+    
+    # We also need the raw accounts and OUs from organizations
+    base_session = _aws_session()
+    org_accounts = _get_org_accounts(base_session) if base_session else []
+    
+    # Filter org_accounts if restricted
+    if allowed_account_ids is not None:
+        org_accounts = [acc for acc in org_accounts if acc["account_id"] in allowed_account_ids]
+
+    account_map = {}
+    for acc in org_accounts:
+        account_map[acc["account_id"]] = {
+            "account_id": acc["account_id"],
+            "ou": acc["ou"],
+            "resource_count": 0,
+            "untagged_count": 0,
+            "compliance_score": 100,
+        }
+
+    # Aggregate resource counts
+    for res in resources:
+        acc_id = str(res.get("account_id", ""))
+        if not acc_id:
+            continue
+        if acc_id not in account_map:
+            account_map[acc_id] = {
+                "account_id": acc_id,
+                "ou": res.get("ou", ""),
+                "resource_count": 0,
+                "untagged_count": 0,
+                "compliance_score": 100,
+            }
+        
+        account_map[acc_id]["resource_count"] += 1
+        if not res.get("tags"):
+            account_map[acc_id]["untagged_count"] += 1
+
+    # Compute compliance scores
+    for acc_data in account_map.values():
+        total = acc_data["resource_count"]
+        untagged = acc_data["untagged_count"]
+        if total > 0:
+            acc_data["compliance_score"] = round(((total - untagged) / total) * 100)
+            
+    return list(account_map.values())
+

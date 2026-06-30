@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import resources, tags
+from app.routers import resources, tags, audit, accounts
 
 
 # Load environment variables from .env file at project root
@@ -24,6 +24,8 @@ app.add_middleware(
 
 app.include_router(resources.router)
 app.include_router(tags.router)
+app.include_router(audit.router)
+app.include_router(accounts.router)
 
 
 @app.get("/health")
