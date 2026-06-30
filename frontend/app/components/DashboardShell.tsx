@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "@/lib/theme";
 import {
-  CloudIcon, GridIcon, ServerIcon, SearchIcon, TagIcon,
-  UsersIcon, FileTextIcon, SettingsIcon, SunIcon, MoonIcon, ChevronDownIcon
+  CloudIcon, GridIcon, ServerIcon, TagIcon,
+  UsersIcon, FileTextIcon, SunIcon, MoonIcon, ChevronDownIcon
 } from "./Icons";
 
 type DashboardUser = {
@@ -34,11 +34,9 @@ function ThemeToggle() {
 const NAV_ITEMS = [
   { id: "/",           label: "Overview",   icon: GridIcon     },
   { id: "/resources",  label: "Resources",  icon: ServerIcon   },
-  { id: "/search",     label: "Search",     icon: SearchIcon   },
   { id: "/tag-editor", label: "Tag Editor", icon: TagIcon      },
   { id: "/accounts",   label: "Accounts",   icon: UsersIcon    },
   { id: "/audit-logs", label: "Audit Logs", icon: FileTextIcon },
-  { id: "/settings",   label: "Settings",   icon: SettingsIcon },
 ];
 
 function Sidebar() {
