@@ -832,6 +832,7 @@ def update_resource_tags(
     resource_id: str,
     resource_type: str,
     tags: dict[str, str],
+    remove_tag_keys: list[str] | None = None,
     account_id: str | None = None,
     tenant_id: str = "default",
     allowed_account_ids: frozenset[str] | set[str] | None = None,
@@ -856,38 +857,52 @@ def update_resource_tags(
         session = base_session
 
     resource_type_lower = resource_type.lower().strip()
+    remove_tag_keys = [key for key in (remove_tag_keys or []) if key]
+    tag_items = [{"Key": key, "Value": value} for key, value in tags.items()]
 
     try:
         if resource_type_lower == "s3 bucket":
             client = session.client("s3")
             client.put_bucket_tagging(
                 Bucket=resource_id,
-                Tagging={"TagSet": [{"Key": key, "Value": value} for key, value in tags.items()]},
+                Tagging={"TagSet": tag_items},
             )
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "global", "tags": tags}
 
         if resource_type_lower in ("ec2 instance", "vpc", "subnet", "security group"):
             client = session.client("ec2")
-            client.create_tags(Resources=[resource_id], Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
+            if remove_tag_keys:
+                client.delete_tags(Resources=[resource_id], Tags=[{"Key": key} for key in remove_tag_keys])
+            if tag_items:
+                client.create_tags(Resources=[resource_id], Tags=tag_items)
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
         if resource_type_lower == "load balancer":
             client = session.client("elbv2")
-            client.add_tags(ResourceArns=[resource_id], Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
+            if remove_tag_keys:
+                client.remove_tags(ResourceArns=[resource_id], TagKeys=remove_tag_keys)
+            if tag_items:
+                client.add_tags(ResourceArns=[resource_id], Tags=tag_items)
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
         if resource_type_lower == "rds instance":
             client = session.client("rds")
-            client.add_tags_to_resource(ResourceName=resource_id, Tags=[{"Key": key, "Value": value} for key, value in tags.items()])
+            if remove_tag_keys:
+                client.remove_tags_from_resource(ResourceName=resource_id, TagKeys=remove_tag_keys)
+            if tag_items:
+                client.add_tags_to_resource(ResourceName=resource_id, Tags=tag_items)
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "", "tags": tags}
 
         if resource_type_lower == "cloudfront distribution":
             client = session.client("cloudfront")
-            client.tag_resource(Resource=resource_id, Tags={"Items": [{"Key": key, "Value": value} for key, value in tags.items()]})
+            if remove_tag_keys:
+                client.untag_resource(Resource=resource_id, TagKeys={"Items": remove_tag_keys})
+            if tag_items:
+                client.tag_resource(Resource=resource_id, Tags={"Items": tag_items})
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": "global", "tags": tags}
 
@@ -895,7 +910,10 @@ def update_resource_tags(
             arn_parts = resource_id.split(":")
             region_name = arn_parts[3] if len(arn_parts) > 3 else None
             client = session.client("lambda", region_name=region_name) if region_name else session.client("lambda")
-            client.tag_resource(Resource=resource_id, Tags=tags)
+            if remove_tag_keys:
+                client.untag_resource(Resource=resource_id, TagKeys=remove_tag_keys)
+            if tags:
+                client.tag_resource(Resource=resource_id, Tags=tags)
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 
@@ -903,7 +921,10 @@ def update_resource_tags(
             arn_parts = resource_id.split(":")
             region_name = arn_parts[3] if len(arn_parts) > 3 else None
             client = session.client("ecs", region_name=region_name) if region_name else session.client("ecs")
-            client.tag_resource(resourceArn=resource_id, tags=[{"key": k, "value": v} for k, v in tags.items()])
+            if remove_tag_keys:
+                client.untag_resource(resourceArn=resource_id, tagKeys=remove_tag_keys)
+            if tags:
+                client.tag_resource(resourceArn=resource_id, tags=[{"key": k, "value": v} for k, v in tags.items()])
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 
@@ -911,7 +932,10 @@ def update_resource_tags(
             arn_parts = resource_id.split(":")
             region_name = arn_parts[3] if len(arn_parts) > 3 else None
             client = session.client("dynamodb", region_name=region_name) if region_name else session.client("dynamodb")
-            client.tag_resource(ResourceArn=resource_id, Tags=[{"Key": k, "Value": v} for k, v in tags.items()])
+            if remove_tag_keys:
+                client.untag_resource(ResourceArn=resource_id, TagKeys=remove_tag_keys)
+            if tag_items:
+                client.tag_resource(ResourceArn=resource_id, Tags=tag_items)
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 
@@ -919,7 +943,10 @@ def update_resource_tags(
             arn_parts = resource_id.split(":")
             region_name = arn_parts[3] if len(arn_parts) > 3 else None
             client = session.client("elasticache", region_name=region_name) if region_name else session.client("elasticache")
-            client.add_tags_to_resource(ResourceName=resource_id, Tags=[{"Key": k, "Value": v} for k, v in tags.items()])
+            if remove_tag_keys:
+                client.remove_tags_from_resource(ResourceName=resource_id, TagKeys=remove_tag_keys)
+            if tag_items:
+                client.add_tags_to_resource(ResourceName=resource_id, Tags=tag_items)
             update_cached_resource_tags(resource_id, tags, tenant_id)
             return {"id": resource_id, "name": resource_id, "type": resource_type, "region": region_name or "", "tags": tags}
 

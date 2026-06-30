@@ -1,50 +1,11 @@
 
 > aws-resource-governance-dashboard-frontend@0.1.0 dev
-> next dev
+> next dev --hostname 127.0.0.1 --port 3000
 
   ▲ Next.js 14.2.30
-  - Local:        http://localhost:3000
+  - Local:        http://127.0.0.1:3000
+  - Network:      http://127.0.0.1:3000
+  - Environments: .env
 
  ✓ Starting...
- ✓ Ready in 2.8s
- ○ Compiling /api/auth/me ...
- ✓ Compiled /api/auth/me in 796ms (66 modules)
- GET /api/auth/me 200 in 1059ms
- GET /api/auth/me 200 in 13ms
- ✓ Compiled /api/resources in 196ms (69 modules)
- GET /api/resources 502 in 248ms
- GET /api/resources 502 in 17ms
- GET /api/auth/me 200 in 16ms
- GET /api/resources 200 in 7946ms
- ○ Compiling / ...
- ✓ Compiled / in 1885ms (448 modules)
- GET / 200 in 2470ms
- ✓ Compiled /api/auth/me in 248ms (261 modules)
- GET /api/auth/me 200 in 415ms
- GET /api/auth/me 200 in 418ms
- ✓ Compiled /api/resources in 160ms (264 modules)
- GET /api/resources 500 in 9758ms
- GET /api/resources 500 in 8894ms
- GET / 200 in 227ms
- GET /api/auth/me 200 in 62ms
- GET /api/auth/me 200 in 52ms
- ✓ Compiled /api/auth/logout in 411ms (266 modules)
- GET /api/auth/logout 307 in 535ms
- GET / 200 in 159ms
- GET /api/resources 200 in 2575ms
- GET /api/auth/me 200 in 66ms
- GET /api/auth/me 200 in 66ms
- GET /api/auth/logout 307 in 26ms
- GET / 200 in 67ms
- GET /api/resources 200 in 2351ms
- GET /api/auth/me 200 in 29ms
- GET /api/auth/me 200 in 30ms
- GET /api/resources 500 in 9382ms
- GET /api/resources 500 in 9334ms
- ✓ Compiled in 175ms (224 modules)
- GET / 200 in 231ms
- ✓ Compiled /api/auth/me in 303ms (261 modules)
- GET /api/auth/me 401 in 455ms
- GET /api/auth/me 401 in 457ms
- ✓ Compiled /api/auth/login in 205ms (263 modules)
- GET /api/auth/login 500 in 272ms
+ ✓ Ready in 2.3s
