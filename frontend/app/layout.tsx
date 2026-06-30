@@ -1,15 +1,25 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import { ThemeProvider } from "@/lib/theme";
 import "./globals.css";
 
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "AWS Resource Governance Dashboard",
-  description: "Prototype dashboard for multi-account AWS resource governance.",
+  title: "AWS Dash — Resource Governance",
+  description:
+    "Multi-account AWS resource governance dashboard. Manage EC2, S3, RDS, tags, and compliance across all your AWS accounts.",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-theme="dark" suppressHydrationWarning className={inter.variable}>
       <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
